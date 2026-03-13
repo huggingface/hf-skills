@@ -27,13 +27,3 @@ uv run ty check
 uv run pytest
 ```
 
-The development environment includes:
-
-- `ty` for type checking and Python language-server support
-- `multilspy` for LSP-backed definitions, references, symbols, hover, and diagnostics
-
-## Notes
-
-Initial analysis and architecture notes live in:
-
-- `docs/initial-assessment.md`
