@@ -112,7 +112,9 @@ def test_install_with_force_overwrites_existing_skill(tmp_path: Path) -> None:
     assert source.installed_commit == updated_commit
 
 
-def test_install_force_preserves_previous_install_when_staged_replacement_is_invalid(tmp_path: Path, monkeypatch) -> None:
+def test_install_force_preserves_previous_install_when_staged_replacement_is_invalid(
+    tmp_path: Path, monkeypatch
+) -> None:
     destination_root = tmp_path / "managed-skills"
     install_dir = destination_root / "alpha"
     install_dir.mkdir(parents=True)

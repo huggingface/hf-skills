@@ -238,10 +238,7 @@ def installed(
         auto=auto,
     )
     records = service.list_installed_skills_many_with_aliases(installed_roots)
-    if format == OutputFormat.json:
-        rows = installed_rows(records, cwd=Path.cwd())
-    else:
-        rows = compact_installed_rows(records)
+    rows = installed_rows(records, cwd=Path.cwd()) if format == OutputFormat.json else compact_installed_rows(records)
     print_list_output(rows, format=format, quiet=quiet, id_key="name")
 
 
@@ -326,7 +323,10 @@ def uninstall(
     assistant: AssistantOpt = None,
     global_: GlobalOpt = False,
     auto: AutoOpt = False,
-    all_: Annotated[bool, typer.Option("--all", help="Remove all matching installs across scanned skill roots.")] = False,
+    all_: Annotated[
+        bool,
+        typer.Option("--all", help="Remove all matching installs across scanned skill roots."),
+    ] = False,
 ) -> None:
     """Remove an installed skill, scanning known directories unless narrowed."""
     uninstall_roots = _resolve_uninstall_roots(
@@ -375,10 +375,7 @@ def update(
     except service.SkillLookupError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
-    if format == OutputFormat.json:
-        rows = update_rows(updates, cwd=Path.cwd())
-    else:
-        rows = compact_update_rows(updates)
+    rows = update_rows(updates, cwd=Path.cwd()) if format == OutputFormat.json else compact_update_rows(updates)
     print_list_output(rows, format=format, quiet=quiet, id_key="name")
 
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from dataclasses import dataclass
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from hf_skills.vendor.fast_agent_core import operations
@@ -62,7 +62,9 @@ def list_installed_skills_many_with_aliases(destination_roots: Sequence[Path]) -
     return _collect_installed_skills_many(destination_roots, dedupe_aliases=False)
 
 
-def _collect_installed_skills_many(destination_roots: Sequence[Path], *, dedupe_aliases: bool) -> list[InstalledSkillRecord]:
+def _collect_installed_skills_many(
+    destination_roots: Sequence[Path], *, dedupe_aliases: bool
+) -> list[InstalledSkillRecord]:
     records: list[InstalledSkillRecord] = []
     seen_dirs: set[Path] = set()
     for destination_root in _unique_destination_roots(destination_roots):
@@ -76,7 +78,9 @@ def _collect_installed_skills_many(destination_roots: Sequence[Path], *, dedupe_
     return records
 
 
-async def install_skill(source: str, selector: str, *, destination_root: Path, force: bool = False) -> InstalledSkillRecord:
+async def install_skill(
+    source: str, selector: str, *, destination_root: Path, force: bool = False
+) -> InstalledSkillRecord:
     scan_result = await scan_marketplace(source)
     selected = operations.select_skill_by_name_or_index(scan_result.skills, selector)
     if selected is None:
@@ -92,7 +96,9 @@ async def install_skill(source: str, selector: str, *, destination_root: Path, f
         raise
 
 
-def install_skill_sync(source: str, selector: str, *, destination_root: Path, force: bool = False) -> InstalledSkillRecord:
+def install_skill_sync(
+    source: str, selector: str, *, destination_root: Path, force: bool = False
+) -> InstalledSkillRecord:
     return asyncio.run(install_skill(source, selector, destination_root=destination_root, force=force))
 
 
@@ -106,7 +112,9 @@ def remove_skill(destination_root: Path, selector: str) -> RemovedSkillRecord:
     return RemovedSkillRecord(name=selected.name, skill_dir=skill_dir)
 
 
-def remove_skill_many(destination_roots: Sequence[Path], selector: str, *, remove_all: bool) -> list[RemovedSkillRecord]:
+def remove_skill_many(
+    destination_roots: Sequence[Path], selector: str, *, remove_all: bool
+) -> list[RemovedSkillRecord]:
     records = list_installed_skills_many_with_aliases(destination_roots)
     selected = _select_installed_records(records, selector, remove_all=remove_all)
     if not selected:
@@ -192,8 +200,8 @@ def _select_installed_records(
         for record in matches
     )
     raise AmbiguousSkillError(
-        f"Multiple installed skills match '{selector_clean}'. Narrow with --assistant or --target, or rerun with --all.\n"
-        f"{matches_text}"
+        "Multiple installed skills match "
+        f"'{selector_clean}'. Narrow with --assistant or --target, or rerun with --all.\n{matches_text}"
     )
 
 

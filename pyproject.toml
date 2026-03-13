@@ -21,7 +21,6 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
   "multilspy",
-  "mypy>=1.14",
   "pytest>=8.3",
   "ruff>=0.11",
   "ty",
@@ -36,13 +35,3 @@ select = ["E", "F", "I", "B", "UP", "SIM", "C4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[tool.mypy]
-python_version = "3.11"
-strict = true
-packages = ["hf_skills"]
-disable_error_code = ["import-untyped"]
-
-[[tool.mypy.overrides]]
-module = ["frontmatter"]
-ignore_missing_imports = true

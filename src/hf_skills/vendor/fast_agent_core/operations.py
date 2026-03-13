@@ -676,7 +676,9 @@ def _copy_skill_source_at_revision(
         stderr = archive.stderr.decode("utf-8", errors="replace").strip()
         stdout = archive.stdout.decode("utf-8", errors="replace").strip()
         detail = stderr or stdout or f"unable to archive {repo_subdir} at {revision}"
-        raise RuntimeError(f"Git command failed: git -C {repo_root} archive --format=tar {revision} {repo_subdir}\n{detail}")
+        raise RuntimeError(
+            f"Git command failed: git -C {repo_root} archive --format=tar {revision} {repo_subdir}\n{detail}"
+        )
 
     with tempfile.TemporaryDirectory() as temp_dir_str:
         temp_dir = Path(temp_dir_str)

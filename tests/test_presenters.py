@@ -4,8 +4,8 @@ from pathlib import Path
 
 from hf_skills.app.presenters import compact_installed_rows, compact_update_rows, update_rows
 from hf_skills.vendor.fast_agent_core.models import InstalledSkillSource, SkillProvenance, SkillUpdateInfo
-from hf_skills.vendor.fast_agent_core.service import InstalledSkillRecord
 from hf_skills.vendor.fast_agent_core.registry import SkillManifest
+from hf_skills.vendor.fast_agent_core.service import InstalledSkillRecord
 
 
 def test_compact_update_rows_shortens_hashes_and_drops_location() -> None:
