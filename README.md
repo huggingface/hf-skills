@@ -28,6 +28,7 @@ Main commands:
   where      Show which local skills directory install/remove/update will use. [alias: target]
 ```
 
+**IMPORTANT:** Use `--global` to target your home directory.
 
 
 ## Development
