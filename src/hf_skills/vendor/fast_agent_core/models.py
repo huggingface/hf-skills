@@ -10,6 +10,7 @@ LOCAL_REVISION = "local"
 
 SkillSourceOrigin = Literal["remote", "local"]
 SkillUpdateStatus = Literal[
+    "dirty",
     "up_to_date",
     "update_available",
     "updated",

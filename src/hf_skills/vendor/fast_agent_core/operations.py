@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import shutil
 import subprocess
+import tarfile
 import tempfile
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -55,33 +57,28 @@ async def fetch_marketplace_skills_with_source(url: str) -> tuple[list[Marketpla
     )
 
 
-async def install_marketplace_skill(skill: MarketplaceSkill, *, destination_root: Path) -> Path:
-    return await asyncio.to_thread(install_marketplace_skill_sync, skill, destination_root)
+async def install_marketplace_skill(skill: MarketplaceSkill, *, destination_root: Path, force: bool = False) -> Path:
+    return await asyncio.to_thread(install_marketplace_skill_sync, skill, destination_root, force)
 
 
-def install_marketplace_skill_sync(skill: MarketplaceSkill, destination_root: Path) -> Path:
+def install_marketplace_skill_sync(skill: MarketplaceSkill, destination_root: Path, force: bool = False) -> Path:
     destination_root = destination_root.resolve()
     destination_root.mkdir(parents=True, exist_ok=True)
     install_dir = destination_root / skill.install_dir_name
-    if install_dir.exists():
+    if install_dir.exists() and not force:
         raise FileExistsError(f"Skill already exists: {install_dir}")
+    if install_dir.exists():
+        with tempfile.TemporaryDirectory(dir=destination_root, prefix=f".{install_dir.name}.install-") as temp_dir_str:
+            temp_dir = Path(temp_dir_str)
+            staged_dir = temp_dir / install_dir.name
+            _populate_marketplace_install_dir(skill, staged_dir)
+            _validate_installed_skill_dir(staged_dir)
+            _atomic_replace_directory(existing_dir=install_dir, staged_dir=staged_dir)
+        return install_dir
+
     try:
-        installed_commit, installed_path_oid, source_origin = _copy_skill_from_marketplace_source(
-            skill,
-            destination_dir=install_dir,
-            pinned_revision=None,
-        )
-        fingerprint = compute_skill_content_fingerprint(install_dir)
-        write_installed_skill_source(
-            install_dir,
-            build_installed_skill_source(
-                skill=skill,
-                source_origin=source_origin,
-                installed_commit=installed_commit,
-                installed_path_oid=installed_path_oid,
-                fingerprint=fingerprint,
-            ),
-        )
+        _populate_marketplace_install_dir(skill, install_dir)
+        _validate_installed_skill_dir(install_dir)
     except Exception:
         if install_dir.exists():
             shutil.rmtree(install_dir)
@@ -90,8 +87,16 @@ def install_marketplace_skill_sync(skill: MarketplaceSkill, destination_root: Pa
 
 
 def remove_local_skill(skill_dir: Path, *, destination_root: Path) -> None:
-    skill_dir = skill_dir.resolve()
-    destination_root = destination_root.resolve()
+    raw_skill_dir = skill_dir.expanduser()
+    raw_destination_root = destination_root.expanduser()
+    if raw_skill_dir.is_symlink():
+        if raw_destination_root.resolve() != raw_skill_dir.parent.resolve():
+            raise ValueError("Skill path is outside of the managed skills directory.")
+        raw_skill_dir.unlink()
+        return
+
+    skill_dir = raw_skill_dir.resolve()
+    destination_root = raw_destination_root.resolve()
     if destination_root not in skill_dir.parents:
         raise ValueError("Skill path is outside of the managed skills directory.")
     if not skill_dir.exists():
@@ -149,10 +154,7 @@ def select_skill_updates(updates: Sequence[SkillUpdateInfo], selector: str) -> l
             return [updates[index - 1]]
         return []
     selector_lower = selector_clean.lower()
-    for update in updates:
-        if update.name.lower() == selector_lower:
-            return [update]
-    return []
+    return [update for update in updates if update.name.lower() == selector_lower]
 
 
 def apply_skill_updates(updates: Sequence[SkillUpdateInfo], *, force: bool) -> list[SkillUpdateInfo]:
@@ -207,10 +209,13 @@ def apply_skill_updates(updates: Sequence[SkillUpdateInfo], *, force: bool) -> l
             )
             continue
         try:
+            revision = refreshed.available_revision
+            if refreshed.status == "dirty":
+                revision = None
             installed_source = _reinstall_skill_from_source(
                 skill_dir=refreshed.skill_dir,
                 source=source,
-                revision=refreshed.available_revision,
+                revision=revision,
             )
         except FileNotFoundError as exc:
             results.append(
@@ -269,7 +274,8 @@ def _check_skill_updates(*, destination_root: Path) -> list[SkillUpdateInfo]:
     head_cache: HeadCache = {}
     path_cache: PathCache = {}
     updates: list[SkillUpdateInfo] = []
-    skill_dirs = [entry for entry in sorted(destination_root.iterdir()) if entry.is_dir()]
+    parse_error_dirs = {Path(error["path"]).parent for error in parse_errors}
+    skill_dirs = sorted({*manifests_by_dir.keys(), *parse_error_dirs})
     for index, skill_dir in enumerate(skill_dirs, start=1):
         manifest = manifests_by_dir.get(skill_dir)
         name = manifest.name if manifest else skill_dir.name
@@ -336,6 +342,19 @@ def _evaluate_skill_update(
             detail="source is local non-git; compare unavailable",
             current_revision=source.installed_revision,
             available_revision=source.installed_revision,
+            managed_source=source,
+        )
+    fingerprint = compute_skill_content_fingerprint(skill_dir)
+    if fingerprint != source.content_fingerprint:
+        current_revision = source.installed_commit or source.installed_revision
+        return SkillUpdateInfo(
+            index=index,
+            name=name,
+            skill_dir=skill_dir,
+            status="dirty",
+            detail="local modifications detected",
+            current_revision=current_revision,
+            available_revision=current_revision,
             managed_source=source,
         )
     available_revision, resolve_status, resolve_error = resolve_source_revision(source, head_cache)
@@ -511,6 +530,24 @@ def _copy_skill_from_marketplace_source(
 ) -> tuple[str | None, str | None, SkillSourceOrigin]:
     local_repo = _resolve_local_repo(skill.repo_url)
     if local_repo is not None:
+        target_revision = pinned_revision
+        if target_revision == LOCAL_REVISION:
+            target_revision = None
+        target_revision = target_revision or skill.repo_ref
+        if target_revision:
+            commit = _resolve_git_commit(local_repo, target_revision)
+            if commit is None:
+                raise RuntimeError(f"Unable to resolve git revision: {target_revision}")
+            _copy_skill_source_at_revision(
+                repo_root=local_repo,
+                repo_subdir=skill.repo_subdir,
+                skill_name=skill.name,
+                install_dir=destination_dir,
+                revision=commit,
+            )
+            path_oid = _resolve_git_path_oid(local_repo, commit, skill.repo_path)
+            return commit, path_oid, "local"
+
         source_dir = _resolve_repo_subdir(local_repo, skill.repo_subdir)
         source_dir = _resolve_skill_source_dir(source_dir, skill.name)
         if not source_dir.exists():
@@ -589,6 +626,67 @@ def _copy_skill_source(source_dir: Path, install_dir: Path) -> None:
         shutil.copy2(source_dir, install_dir / "SKILL.md")
     else:
         raise FileNotFoundError("SKILL.md not found in the selected repository path.")
+
+
+def _populate_marketplace_install_dir(skill: MarketplaceSkill, install_dir: Path) -> None:
+    installed_commit, installed_path_oid, source_origin = _copy_skill_from_marketplace_source(
+        skill,
+        destination_dir=install_dir,
+        pinned_revision=None,
+    )
+    fingerprint = compute_skill_content_fingerprint(install_dir)
+    write_installed_skill_source(
+        install_dir,
+        build_installed_skill_source(
+            skill=skill,
+            source_origin=source_origin,
+            installed_commit=installed_commit,
+            installed_path_oid=installed_path_oid,
+            fingerprint=fingerprint,
+        ),
+    )
+
+
+def _validate_installed_skill_dir(install_dir: Path) -> None:
+    manifests, errors = SkillRegistry.load_directory_with_errors(install_dir.parent)
+    for manifest in manifests:
+        manifest_dir = manifest.path.parent if manifest.path.is_file() else manifest.path
+        if manifest_dir == install_dir:
+            return
+    for error in errors:
+        if Path(error["path"]).parent == install_dir:
+            raise RuntimeError(f"Installed skill could not be reloaded: {install_dir}")
+    raise RuntimeError(f"Installed skill could not be reloaded: {install_dir}")
+
+
+def _copy_skill_source_at_revision(
+    *,
+    repo_root: Path,
+    repo_subdir: str,
+    skill_name: str | None,
+    install_dir: Path,
+    revision: str,
+) -> None:
+    archive = subprocess.run(
+        ["git", "-C", str(repo_root), "archive", "--format=tar", revision, repo_subdir],
+        check=False,
+        capture_output=True,
+    )
+    if archive.returncode != 0:
+        stderr = archive.stderr.decode("utf-8", errors="replace").strip()
+        stdout = archive.stdout.decode("utf-8", errors="replace").strip()
+        detail = stderr or stdout or f"unable to archive {repo_subdir} at {revision}"
+        raise RuntimeError(f"Git command failed: git -C {repo_root} archive --format=tar {revision} {repo_subdir}\n{detail}")
+
+    with tempfile.TemporaryDirectory() as temp_dir_str:
+        temp_dir = Path(temp_dir_str)
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+            tar.extractall(temp_dir)
+        source_dir = _resolve_repo_subdir(temp_dir, repo_subdir)
+        source_dir = _resolve_skill_source_dir(source_dir, skill_name)
+        if not source_dir.exists():
+            raise FileNotFoundError(f"Skill path not found in repository: {repo_subdir}")
+        _copy_skill_source(source_dir, install_dir)
 
 
 def _resolve_skill_source_dir(source_dir: Path, skill_name: str | None) -> Path:

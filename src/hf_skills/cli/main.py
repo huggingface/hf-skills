@@ -7,8 +7,15 @@ from typing import Annotated
 import typer
 
 from hf_skills.app.config import DEFAULT_REGISTRIES, resolve_registry
-from hf_skills.app.presenters import installed_rows, marketplace_rows, target_rows, update_rows
-from hf_skills.app.targets import Assistant, TargetResolution, resolve_target
+from hf_skills.app.presenters import (
+    compact_installed_rows,
+    compact_update_rows,
+    installed_rows,
+    marketplace_rows,
+    target_rows,
+    update_rows,
+)
+from hf_skills.app.targets import Assistant, TargetResolution, candidate_targets, resolve_target
 from hf_skills.vendor.fast_agent_core import service
 from hf_skills.vendor.fast_agent_core.registry_urls import format_marketplace_display_url
 from hf_skills.vendor.hf_cli_compat.output import FormatOpt, OutputFormat, QuietOpt, print_list_output
@@ -58,6 +65,72 @@ def _resolve_target_or_exit(
         raise typer.Exit(code=1) from exc
 
 
+def _resolve_update_roots(
+    *,
+    cwd: Path,
+    target: Path | None,
+    assistant: Assistant | None,
+    global_: bool,
+    auto: bool,
+) -> list[Path]:
+    if target is not None or assistant is not None:
+        try:
+            resolution = resolve_target(
+                cwd=cwd,
+                target=target,
+                assistant=assistant,
+                global_=global_,
+                auto=auto,
+            )
+        except ValueError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from exc
+        return [resolution.selected]
+    return candidate_targets(cwd=cwd, global_=global_)
+
+
+def _resolve_uninstall_roots(
+    *,
+    cwd: Path,
+    target: Path | None,
+    assistant: Assistant | None,
+    global_: bool,
+    auto: bool,
+) -> list[Path]:
+    return _resolve_update_roots(
+        cwd=cwd,
+        target=target,
+        assistant=assistant,
+        global_=global_,
+        auto=auto,
+    )
+
+
+def _resolve_installed_roots(
+    *,
+    cwd: Path,
+    target: Path | None,
+    assistant: Assistant | None,
+    global_: bool,
+    auto: bool,
+) -> list[Path]:
+    return _resolve_update_roots(
+        cwd=cwd,
+        target=target,
+        assistant=assistant,
+        global_=global_,
+        auto=auto,
+    )
+
+
+def _scan_marketplace_or_exit(source: str) -> service.MarketplaceScanResult:
+    try:
+        return service.scan_marketplace_sync(source)
+    except Exception as exc:
+        typer.echo(f"Failed to load marketplace: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
 def _print_marketplace_list(
     *,
     registry: str | None,
@@ -65,7 +138,7 @@ def _print_marketplace_list(
     quiet: bool,
 ) -> None:
     source = resolve_registry(registry)
-    scan_result = service.scan_marketplace_sync(source)
+    scan_result = _scan_marketplace_or_exit(source)
     if not quiet and format != OutputFormat.json:
         typer.echo(f"Listing skills from: {format_marketplace_display_url(scan_result.source)}")
     rows = marketplace_rows(scan_result.skills)
@@ -156,10 +229,19 @@ def installed(
     format: FormatOpt = OutputFormat.table,
     quiet: QuietOpt = False,
 ) -> None:
-    """List skills already installed in the selected target directory."""
-    resolution = _resolve_target_or_exit(target=target, assistant=assistant, global_=global_, auto=auto)
-    records = service.list_installed_skills(resolution.selected)
-    rows = installed_rows(records, cwd=Path.cwd())
+    """List installed skills across known directories, or a specific one when narrowed."""
+    installed_roots = _resolve_installed_roots(
+        cwd=Path.cwd(),
+        target=target,
+        assistant=assistant,
+        global_=global_,
+        auto=auto,
+    )
+    records = service.list_installed_skills_many_with_aliases(installed_roots)
+    if format == OutputFormat.json:
+        rows = installed_rows(records, cwd=Path.cwd())
+    else:
+        rows = compact_installed_rows(records)
     print_list_output(rows, format=format, quiet=quiet, id_key="name")
 
 
@@ -175,7 +257,7 @@ def search(
 ) -> None:
     """Search registry skills by name or description."""
     source = resolve_registry(registry)
-    scan_result = service.scan_marketplace_sync(source)
+    scan_result = _scan_marketplace_or_exit(source)
     tokens = [token.casefold() for token in query.split() if token.strip()]
     filtered = [
         skill
@@ -215,14 +297,21 @@ def install(
     global_: GlobalOpt = False,
     auto: AutoOpt = False,
     registry: RegistryOpt = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", "--update", help="Overwrite an existing install at the selected target."),
+    ] = False,
 ) -> None:
     """Install a registry skill into the selected target directory."""
     resolution = _resolve_target_or_exit(target=target, assistant=assistant, global_=global_, auto=auto)
     source = resolve_registry(registry)
     try:
-        record = service.install_skill_sync(source, selector, destination_root=resolution.selected)
-    except (service.SkillLookupError, FileExistsError, FileNotFoundError, RuntimeError) as exc:
-        typer.echo(str(exc), err=True)
+        record = service.install_skill_sync(source, selector, destination_root=resolution.selected, force=force)
+    except (json.JSONDecodeError, service.SkillLookupError, FileExistsError, FileNotFoundError, RuntimeError) as exc:
+        if isinstance(exc, FileExistsError):
+            typer.echo(f"{exc}\nRe-run with --force to overwrite.", err=True)
+        else:
+            typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Installed '{record.name}' to {record.skill_dir}")
 
@@ -237,15 +326,23 @@ def uninstall(
     assistant: AssistantOpt = None,
     global_: GlobalOpt = False,
     auto: AutoOpt = False,
+    all_: Annotated[bool, typer.Option("--all", help="Remove all matching installs across scanned skill roots.")] = False,
 ) -> None:
-    """Remove a previously installed skill from the selected target directory."""
-    resolution = _resolve_target_or_exit(target=target, assistant=assistant, global_=global_, auto=auto)
+    """Remove an installed skill, scanning known directories unless narrowed."""
+    uninstall_roots = _resolve_uninstall_roots(
+        cwd=Path.cwd(),
+        target=target,
+        assistant=assistant,
+        global_=global_,
+        auto=auto,
+    )
     try:
-        removed = service.remove_skill(resolution.selected, selector)
-    except (service.SkillLookupError, FileNotFoundError, ValueError) as exc:
+        removed = service.remove_skill_many(uninstall_roots, selector, remove_all=all_)
+    except (service.AmbiguousSkillError, service.SkillLookupError, FileNotFoundError, ValueError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
-    typer.echo(f"Removed '{removed.name}' from {removed.skill_dir}")
+    for record in removed:
+        typer.echo(f"Removed '{record.name}' from {record.skill_dir}")
 
 
 @app.command(
@@ -265,14 +362,23 @@ def update(
     format: FormatOpt = OutputFormat.table,
     quiet: QuietOpt = False,
 ) -> None:
-    """Update skills already installed in the selected target directory."""
-    resolution = _resolve_target_or_exit(target=target, assistant=assistant, global_=global_, auto=auto)
+    """Update installed skills across known directories, or a specific one when narrowed."""
+    update_roots = _resolve_update_roots(
+        cwd=Path.cwd(),
+        target=target,
+        assistant=assistant,
+        global_=global_,
+        auto=auto,
+    )
     try:
-        updates = service.apply_updates(resolution.selected, selector, force=force)
+        updates = service.apply_updates_many(update_roots, selector, force=force)
     except service.SkillLookupError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
-    rows = update_rows(updates, cwd=Path.cwd())
+    if format == OutputFormat.json:
+        rows = update_rows(updates, cwd=Path.cwd())
+    else:
+        rows = compact_update_rows(updates)
     print_list_output(rows, format=format, quiet=quiet, id_key="name")
 
 

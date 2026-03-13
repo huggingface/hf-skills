@@ -33,7 +33,7 @@ class MarketplaceEntryModel(BaseModel):
         default_repo_ref = context.get("repo_ref")
 
         repo_url = _first_str(data, "repo", "repository", "git", "repo_url")
-        repo_ref = _first_str(data, "ref", "branch", "tag", "revision", "commit")
+        repo_ref = _first_str(data, "repo_ref", "ref", "branch", "tag", "revision", "commit")
         repo_path = _first_str(data, "path", "skill_path", "directory", "dir", "location", "repo_path")
         source_value = _first_str(data, "url", "skill_url", "source", "skill_source")
         source_url = source_value if _is_probable_url(source_value) else None
@@ -57,7 +57,7 @@ class MarketplaceEntryModel(BaseModel):
         bundle_name = _first_str(data, "bundle_name")
         bundle_description = _first_str(data, "bundle_description")
         if not name and repo_path:
-            guessed = PurePosixPath(repo_path).name
+            guessed = _derive_skill_name(repo_path)
             name = guessed or repo_path
 
         repo_url = repo_url or default_repo_url
@@ -199,7 +199,7 @@ def _expand_plugin_entry(entry: dict[str, Any], plugin_root: str | None) -> list
         for skill in skills:
             if not isinstance(skill, str) or not skill.strip():
                 continue
-            skill_name = PurePosixPath(skill).name or skill.strip()
+            skill_name = _derive_skill_name(skill)
             combined_path = _join_relative_paths(repo_path, skill)
             skill_entry = dict(base_entry)
             skill_entry["name"] = skill_name
@@ -221,7 +221,11 @@ def _parse_plugin_source(source: Any, plugin_root: str | None) -> tuple[str | No
 
     if isinstance(source, str) and source.strip():
         if _is_probable_url(source):
-            repo_url = source.strip()
+            parsed = _parse_github_url(source)
+            if parsed:
+                repo_url, repo_ref, repo_path = parsed
+            else:
+                repo_url = source.strip()
         else:
             repo_path = _join_relative_paths(plugin_root, source)
             plugin_root_applied = True
@@ -262,6 +266,13 @@ def _clean_relative_path(value: str | None) -> str | None:
     if cleaned in {"", "."}:
         return None
     return cleaned
+
+
+def _derive_skill_name(path: str) -> str:
+    candidate = PurePosixPath(path.strip())
+    if candidate.name.lower() == "skill.md":
+        return candidate.parent.name or candidate.name
+    return candidate.name or path.strip()
 
 
 def _parse_github_url(url: str | None) -> tuple[str, str | None, str] | None:

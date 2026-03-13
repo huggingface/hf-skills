@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from hf_skills.vendor.fast_agent_core import formatting, marketplace_source_utils
 from hf_skills.vendor.fast_agent_core.marketplace_parsing import normalize_repo_path
@@ -102,13 +103,12 @@ def get_skill_provenance(skill_dir: Path) -> SkillProvenance:
 def format_skill_provenance_details(skill_dir: Path) -> tuple[str, str | None]:
     provenance_value = get_skill_provenance(skill_dir)
     if provenance_value.status == "unmanaged":
-        return "unmanaged.", None
+        return "unmanaged", None
     if provenance_value.status != "managed" or provenance_value.source is None:
         return provenance_value.summary, None
 
     source = provenance_value.source
-    ref_label = f"@{source.repo_ref}" if source.repo_ref else ""
-    managed_value = f"{source.repo_url}{ref_label} ({source.repo_path})"
+    managed_value = _format_repo_display(source.repo_url, source.repo_ref)
     installed_value = (
         f"{formatting.format_installed_at_display(source.installed_at)} "
         f"revision: {formatting.format_revision_short(source.installed_revision)}"
@@ -166,3 +166,22 @@ def build_installed_skill_source(
 
 def _iso_utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _format_repo_display(repo_url: str, repo_ref: str | None) -> str:
+    parsed = urlparse(repo_url)
+    display = repo_url
+    if parsed.netloc in {"github.com", "www.github.com"}:
+        parts = [part for part in parsed.path.strip("/").split("/") if part]
+        if len(parts) >= 2:
+            display = f"{parts[0]}/{parts[1]}"
+    elif parsed.scheme == "file":
+        repo_path = Path(parsed.path).expanduser()
+        display = repo_path.name or repo_path.as_posix()
+    elif parsed.scheme == "":
+        repo_path = Path(repo_url).expanduser()
+        display = repo_path.name or repo_path.as_posix()
+
+    if repo_ref and repo_ref not in {"main", "master"}:
+        return f"{display}@{repo_ref}"
+    return display

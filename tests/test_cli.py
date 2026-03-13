@@ -62,6 +62,77 @@ def test_add_then_list_installed_skill(tmp_path: Path) -> None:
     assert "alpha" in list_result.stdout
 
 
+def test_install_reports_force_hint_when_skill_exists(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    marketplace = _create_skill_repo(repo_root, name="alpha", description="Alpha skill")
+    target = tmp_path / "managed-skills"
+
+    first_result = runner.invoke(
+        app,
+        ["install", "alpha", "--registry", marketplace.as_posix(), "--target", target.as_posix()],
+    )
+    assert first_result.exit_code == 0
+
+    second_result = runner.invoke(
+        app,
+        ["install", "alpha", "--registry", marketplace.as_posix(), "--target", target.as_posix()],
+    )
+
+    assert second_result.exit_code == 1
+    assert "Skill already exists:" in second_result.stderr
+    assert "Re-run with --force to overwrite." in second_result.stderr
+
+
+def test_install_force_overwrites_existing_skill(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    marketplace = _create_skill_repo(repo_root, name="alpha", description="Alpha skill")
+    target = tmp_path / "managed-skills"
+
+    first_result = runner.invoke(
+        app,
+        ["install", "alpha", "--registry", marketplace.as_posix(), "--target", target.as_posix()],
+    )
+    assert first_result.exit_code == 0
+
+    skill_file = target / "alpha" / "SKILL.md"
+    skill_file.write_text("---\nname: alpha\ndescription: Local override\n---\n\nlocal\n", encoding="utf-8")
+
+    force_result = runner.invoke(
+        app,
+        ["install", "alpha", "--registry", marketplace.as_posix(), "--target", target.as_posix(), "--force"],
+    )
+
+    assert force_result.exit_code == 0
+    installed_text = skill_file.read_text(encoding="utf-8")
+    assert "Alpha skill" in installed_text
+    assert "Local override" not in installed_text
+
+
+def test_install_update_alias_overwrites_existing_skill(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    marketplace = _create_skill_repo(repo_root, name="alpha", description="Alpha skill")
+    target = tmp_path / "managed-skills"
+
+    first_result = runner.invoke(
+        app,
+        ["install", "alpha", "--registry", marketplace.as_posix(), "--target", target.as_posix()],
+    )
+    assert first_result.exit_code == 0
+
+    skill_file = target / "alpha" / "SKILL.md"
+    skill_file.write_text("---\nname: alpha\ndescription: Local override\n---\n\nlocal\n", encoding="utf-8")
+
+    update_result = runner.invoke(
+        app,
+        ["install", "alpha", "--registry", marketplace.as_posix(), "--target", target.as_posix(), "--update"],
+    )
+
+    assert update_result.exit_code == 0
+    installed_text = skill_file.read_text(encoding="utf-8")
+    assert "Alpha skill" in installed_text
+    assert "Local override" not in installed_text
+
+
 def test_where_auto_prefers_existing_shared_agents_directory(tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     project_dir.mkdir()
@@ -120,6 +191,17 @@ def test_list_json_suppresses_marketplace_banner(tmp_path: Path) -> None:
             "name": "alpha",
         }
     ]
+
+
+def test_list_reports_invalid_marketplace_json_cleanly(tmp_path: Path) -> None:
+    marketplace = tmp_path / "marketplace.json"
+    marketplace.write_text("{ invalid", encoding="utf-8")
+
+    result = runner.invoke(app, ["list", "--registry", marketplace.as_posix()])
+
+    assert result.exit_code == 1
+    assert "Failed to load marketplace:" in result.stderr
+    assert "JSONDecodeError" not in result.stderr
 
 
 def test_search_quiet_suppresses_marketplace_banner(tmp_path: Path) -> None:

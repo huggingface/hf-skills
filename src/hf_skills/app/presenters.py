@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hf_skills.vendor.fast_agent_core import provenance
+from hf_skills.vendor.fast_agent_core import formatting, provenance
 from hf_skills.vendor.fast_agent_core.models import MarketplaceSkill, SkillUpdateInfo
 from hf_skills.vendor.fast_agent_core.service import InstalledSkillRecord
 
@@ -24,12 +24,28 @@ def installed_rows(records: list[InstalledSkillRecord], *, cwd: Path) -> list[di
     rows: list[dict[str, str]] = []
     for index, record in enumerate(records, start=1):
         relative_path = _display_path(record.skill_dir, cwd=cwd)
-        provenance_value, installed_value = provenance.format_skill_provenance_details(record.skill_dir)
+        provenance_value, installed_value = _installed_provenance_values(record)
         rows.append(
             {
                 "index": str(index),
                 "name": record.name,
                 "location": relative_path,
+                "provenance": provenance_value,
+                "installed": installed_value or "",
+            }
+        )
+    return rows
+
+
+def compact_installed_rows(records: list[InstalledSkillRecord]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for index, record in enumerate(records, start=1):
+        provenance_value, installed_value = _installed_provenance_values(record)
+        rows.append(
+            {
+                "index": str(index),
+                "name": record.name,
+                "agent": _display_agent_root(record.skill_dir),
                 "provenance": provenance_value,
                 "installed": installed_value or "",
             }
@@ -48,6 +64,23 @@ def update_rows(updates: list[SkillUpdateInfo], *, cwd: Path) -> list[dict[str, 
                 "location": _display_path(update.skill_dir, cwd=cwd),
                 "current": update.current_revision or "",
                 "available": update.available_revision or "",
+                "detail": update.detail or "",
+            }
+        )
+    return rows
+
+
+def compact_update_rows(updates: list[SkillUpdateInfo]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for update in updates:
+        rows.append(
+            {
+                "index": str(update.index),
+                "name": update.name,
+                "agent": _display_agent_root(update.skill_dir),
+                "status": update.status,
+                "current": formatting.format_revision_short(update.current_revision),
+                "available": formatting.format_revision_short(update.available_revision),
                 "detail": update.detail or "",
             }
         )
@@ -83,3 +116,17 @@ def _display_path(path: Path, *, cwd: Path) -> str:
         return path.relative_to(cwd).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def _display_agent_root(skill_dir: Path) -> str:
+    parents = skill_dir.parts
+    if len(parents) >= 3 and parents[-2] == "skills":
+        return parents[-3]
+    return skill_dir.parent.name or skill_dir.parent.as_posix()
+
+
+def _installed_provenance_values(record: InstalledSkillRecord) -> tuple[str, str]:
+    if record.skill_dir.is_symlink():
+        return "(symlink)", ""
+    provenance_value, installed_value = provenance.format_skill_provenance_details(record.skill_dir)
+    return provenance_value, installed_value or ""
