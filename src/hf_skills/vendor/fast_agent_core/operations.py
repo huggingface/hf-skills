@@ -628,6 +628,34 @@ def _copy_skill_source(source_dir: Path, install_dir: Path) -> None:
         raise FileNotFoundError("SKILL.md not found in the selected repository path.")
 
 
+def _extract_git_archive_safely(archive: tarfile.TarFile, destination: Path) -> None:
+    destination = destination.resolve()
+    for member in archive.getmembers():
+        _validate_git_archive_member(member, destination)
+    try:
+        archive.extractall(destination, filter="data")
+    except TypeError as exc:
+        if "filter" not in str(exc):
+            raise
+        archive.extractall(destination)
+
+
+def _validate_git_archive_member(member: tarfile.TarInfo, destination: Path) -> None:
+    member_path = (destination / member.name).resolve()
+    if not _is_relative_to(member_path, destination):
+        raise RuntimeError(f"Refusing to extract unsafe archive member: {member.name}")
+    if not (member.isfile() or member.isdir()):
+        raise RuntimeError(f"Refusing to extract unsupported archive member: {member.name}")
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
 def _populate_marketplace_install_dir(skill: MarketplaceSkill, install_dir: Path) -> None:
     installed_commit, installed_path_oid, source_origin = _copy_skill_from_marketplace_source(
         skill,
@@ -683,7 +711,7 @@ def _copy_skill_source_at_revision(
     with tempfile.TemporaryDirectory() as temp_dir_str:
         temp_dir = Path(temp_dir_str)
         with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
-            tar.extractall(temp_dir)
+            _extract_git_archive_safely(tar, temp_dir)
         source_dir = _resolve_repo_subdir(temp_dir, repo_subdir)
         source_dir = _resolve_skill_source_dir(source_dir, skill_name)
         if not source_dir.exists():

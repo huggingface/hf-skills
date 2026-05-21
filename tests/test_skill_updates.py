@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import subprocess
+import tarfile
 from pathlib import Path
 
 from hf_skills.vendor.fast_agent_core import operations, service
@@ -202,6 +204,51 @@ def test_install_from_local_repo_honors_repo_ref(tmp_path: Path) -> None:
     assert source is not None
     assert source.repo_ref == "release"
     assert source.installed_commit == release_commit
+
+
+def test_copy_skill_source_at_revision_rejects_unsafe_archive_member(tmp_path: Path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    install_dir = tmp_path / "managed-skills" / "alpha"
+    escaped_file = tmp_path / "escaped.txt"
+
+    archive_buffer = io.BytesIO()
+    with tarfile.open(fileobj=archive_buffer, mode="w") as archive:
+        skill_payload = b"---\nname: alpha\ndescription: Alpha skill\n---\n\nbody\n"
+        skill_info = tarfile.TarInfo("skills/alpha/SKILL.md")
+        skill_info.size = len(skill_payload)
+        archive.addfile(skill_info, io.BytesIO(skill_payload))
+
+        escaped_payload = b"outside extraction root\n"
+        escaped_info = tarfile.TarInfo(escaped_file.as_posix())
+        escaped_info.size = len(escaped_payload)
+        archive.addfile(escaped_info, io.BytesIO(escaped_payload))
+
+    def fake_archive(*_args, **_kwargs) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=archive_buffer.getvalue(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_archive)
+
+    try:
+        operations._copy_skill_source_at_revision(
+            repo_root=repo,
+            repo_subdir="skills/alpha",
+            skill_name=None,
+            install_dir=install_dir,
+            revision="deadbeef",
+        )
+    except RuntimeError as exc:
+        assert "unsafe archive member" in str(exc)
+    else:
+        raise AssertionError("expected unsafe archive member to fail")
+
+    assert not escaped_file.exists()
+    assert not install_dir.exists()
 
 
 def test_update_check_and_apply(tmp_path: Path) -> None:
